@@ -447,6 +447,10 @@ class TelegramBot extends EventEmitter {
    * @see https://core.telegram.org/bots/api#getfile
    */
   getFileLink(fileId, form = {}) {
+    if (this.options.useLocal) {
+      return this.getFile(fileId, form)
+                 .then(resp => resp.file_path);
+    }
     return this.getFile(fileId, form)
       .then(resp => `${this.options.baseApiUrl}/file/bot${this.token}/${resp.file_path}`);
   }
@@ -466,20 +470,31 @@ class TelegramBot extends EventEmitter {
    * @param  {Object} [options] Additional Telegram query options
    * @return {stream.Readable} fileStream
    */
-  getFileStream(fileId, form = {}) {
+  async getFileStream(fileId, form = {}) {
     const fileStream = new stream.PassThrough();
-    fileStream.path = fileId;
-    this.getFileLink(fileId, form)
-      .then((fileURI) => {
-        fileStream.emit('info', {
-          uri: fileURI,
-        });
-        pump(streamedRequest(Object.assign({ uri: fileURI }, this.options.request)), fileStream);
-      })
-      .catch((error) => {
-        fileStream.emit('error', error);
+
+    try {
+      const useLocal = this.options.useLocal;
+      const fileLinkOrPath = await this.getFileLink(fileId, form);
+      if (useLocal) {
+        return fs.createReadStream(fileLinkOrPath);
+      }
+
+      fileStream.path = fileId;
+
+      fileStream.emit('info', {
+        uri: fileLinkOrPath,
       });
-    return fileStream;
+
+      pump(streamedRequest(Object.assign({ uri: fileLinkOrPath }, this.options.request)), fileStream);
+
+      return fileStream;
+    } catch (error) {
+      fileStream.emit('error', error);
+      return error;
+    } finally {
+      fileStream.destroy();
+    }
   }
 
   /**
@@ -501,7 +516,7 @@ class TelegramBot extends EventEmitter {
       reject = b;
     });
     const fileStream = this.getFileStream(fileId, form);
-    fileStream.on('info', (info) => {
+    fileStream.once('info', (info) => {
       const fileName = info.uri.slice(info.uri.lastIndexOf('/') + 1);
       // TODO: Ensure fileName doesn't contains slashes
       const filePath = path.join(downloadDir, fileName);
@@ -510,7 +525,7 @@ class TelegramBot extends EventEmitter {
         return resolve(filePath);
       });
     });
-    fileStream.on('error', (err) => {
+    fileStream.once('error', (err) => {
       reject(err);
     });
     return promise;
